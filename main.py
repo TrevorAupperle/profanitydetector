@@ -11,6 +11,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.dummy import DummyClassifier
+
 
 
 class MetricsCallback(tf.keras.callbacks.Callback):
@@ -136,24 +138,39 @@ def save_metrics(data, filename):
         json.dump(data, file, indent=4)
 
 
-def train_custom_model(X_train, y_train, X_test, y_test, alpha, num_iterations, lambda_):
+def train_custom_model(X_train, y_train, X_val, y_val, alpha, num_iterations, lambda_):
     n_features = X_train.shape[1]
-    weights_init = np.zeros((n_features, 1), dtype=np.float32)
-    weights, cost_history = gradient_descent(X_train, y_train, weights_init, alpha, num_iterations, lambda_)
-    y_pred = predict(X_test, weights)
+    weights = np.zeros((n_features, 1), dtype=np.float32)
+    train_loss_history, val_loss_history = [], []
 
-    # Calculate metrics
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, zero_division=0)
-    recall = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
+    for i in range(num_iterations):
+        train_pred = sigmoid(X_train.dot(weights))
+        train_loss = compute_cost(X_train, y_train, weights, lambda_)
+        train_loss_history.append(train_loss)
+
+        val_pred = sigmoid(X_val.dot(weights))
+        val_loss = compute_cost(X_val, y_val, weights, lambda_)
+        val_loss_history.append(val_loss)
+
+        # Gradient descent step
+        errors = train_pred - y_train
+        grad_reg = lambda_ / len(y_train) * np.vstack([0, weights[1:]])
+        gradients = (1 / len(y_train)) * (X_train.T.dot(errors)) + grad_reg
+        weights -= alpha * gradients
+
+    y_pred = predict(X_val, weights)
+    accuracy = accuracy_score(y_val, y_pred)
+    precision = precision_score(y_val, y_pred, zero_division=0)
+    recall = recall_score(y_val, y_pred)
+    f1 = f1_score(y_val, y_pred)
 
     return {
         'Accuracy': accuracy,
         'Precision': precision,
         'Recall': recall,
         'F1 Score': f1,
-        'Cost History': cost_history,
+        'Train Loss History': train_loss_history,
+        'Validation Loss History': val_loss_history,
         'Model Settings': {
             'Alpha': alpha,
             'Lambda': lambda_,
@@ -167,6 +184,23 @@ def train_mlp_model(model, X_train, y_train, X_val, y_val, categories, epochs=50
     history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size,
                         validation_data=(X_val, y_val), verbose=1, callbacks=[metrics_callback])
     return history.history
+
+
+def train_and_evaluate_dummy_classifier(X_train, y_train, X_test, y_test):
+    # Initialize the dummy classifier to predict based on uniform random chance
+    dummy_clf = DummyClassifier(strategy="uniform", random_state=42)
+    dummy_clf.fit(X_train, y_train)
+    y_pred_dummy = dummy_clf.predict(X_test)
+
+    # Calculate and print the metrics
+    dummy_metrics = {
+        'Accuracy': accuracy_score(y_test, y_pred_dummy),
+        'Precision': precision_score(y_test, y_pred_dummy, average='weighted', zero_division=0),
+        'Recall': recall_score(y_test, y_pred_dummy, average='weighted'),
+        'F1 Score': f1_score(y_test, y_pred_dummy, average='weighted')
+    }
+
+    return dummy_metrics
 
 
 def visualize_metrics(filename):
@@ -202,12 +236,13 @@ def visualize_metrics(filename):
     plt.show()
 
 
-def visualize_cost_history(cost_history, category):
+def visualize_loss(train_loss, val_loss, title='Training and Validation Loss'):
     plt.figure(figsize=(10, 5))
-    plt.plot(cost_history, label='Cost Over Iterations')
-    plt.title('Cost History for ' + category)
+    plt.plot(train_loss, label='Training Loss')
+    plt.plot(val_loss, label='Validation Loss')
+    plt.title(title)
     plt.xlabel('Iteration')
-    plt.ylabel('Cost')
+    plt.ylabel('Loss')
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -358,6 +393,14 @@ def main():
         model_choice = choose_model()
         hyperparameters = get_hyperparameters(model_choice)
         train_and_evaluate_model(model_choice, hyperparameters)
+
+        # Train and evaluate dummy classifier
+        dummy_metrics = train_and_evaluate_dummy_classifier(X_train, train_data[categories], X_test,
+                                                            test_data[categories])
+        print("Dummy Classifier Metrics:")
+        for metric, value in dummy_metrics.items():
+            print(f"{metric}: {value}")
+
         visualize_prompt = input("Would you like to visualize the results now? (y/n): ").strip().lower()
         if visualize_prompt in ['y', 'yes']:
             if model_choice == 1:
@@ -367,8 +410,10 @@ def main():
                 with open('custom_model_metrics.json', 'r') as file:
                     data = json.load(file)
                     for category in data:
-                        if 'Cost History' in data[category]:
-                            visualize_cost_history(data[category]['Cost History'], category)
+                        if 'Train Loss History' in data[category]:
+                            visualize_loss(data[category]['Train Loss History'],
+                                           data[category]['Validation Loss History'],
+                                           'Training and Validation Loss for ' + category)
             elif model_choice == 3:
                 visualize_mlp_metrics('mlp_model_metrics.json')
 
@@ -387,8 +432,10 @@ def main():
             with open('custom_model_metrics.json', 'r') as file:
                 data = json.load(file)
                 for category in data:
-                    if 'Cost History' in data[category]:
-                        visualize_cost_history(data[category]['Cost History'], category)
+                    if 'Train Loss History' in data[category]:
+                        visualize_loss(data[category]['Train Loss History'],
+                                       data[category]['Validation Loss History'],
+                                       'Training and Validation Loss for ' + category)
         elif visualization_choice == '3':
             visualize_mlp_metrics('mlp_model_metrics.json')
         elif visualization_choice == '4':
@@ -399,8 +446,10 @@ def main():
             with open('custom_model_metrics.json', 'r') as file:
                 data = json.load(file)
                 for category in data:
-                    if 'Cost History' in data[category]:
-                        visualize_cost_history(data[category]['Cost History'], category)
+                    if 'Train Loss History' in data[category]:
+                        visualize_loss(data[category]['Train Loss History'],
+                                       data[category]['Validation Loss History'],
+                                       'Training and Validation Loss for ' + category)
             print("Visualizing TensorFlow MLP Data:")
             visualize_mlp_metrics('mlp_model_metrics.json')
         else:
